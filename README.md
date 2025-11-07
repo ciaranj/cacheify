@@ -1,4 +1,4 @@
-# Cacheity
+# Cacheify
 
 Simple cache plugin middleware caches responses on disk. 
 
@@ -87,3 +87,7 @@ The maximum length in bytes for header keys (names). This prevents disk bloat fr
 
 The maximum length in bytes for header values. This prevents disk bloat from oversized cookies, tokens, or other header values. The default allows for large JWTs and session cookies while preventing abuse.
 
+#### Max Header Value Length (`stripResponseCookies`)
+*Default: true*
+
+If true (the default) cacheify will remove any 'Set-Cookie' headers from any cacheable responses (including the original request.)

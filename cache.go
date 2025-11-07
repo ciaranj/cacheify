@@ -17,26 +17,28 @@ import (
 
 // Config configures the middleware.
 type Config struct {
-	Path              string `json:"path" yaml:"path" toml:"path"`
-	MaxExpiry         int    `json:"maxExpiry" yaml:"maxExpiry" toml:"maxExpiry"`
-	Cleanup           int    `json:"cleanup" yaml:"cleanup" toml:"cleanup"`
-	AddStatusHeader   bool   `json:"addStatusHeader" yaml:"addStatusHeader" toml:"addStatusHeader"`
-	QueryInKey        bool   `json:"queryInKey" yaml:"queryInKey" toml:"queryInKey"`
-	MaxHeaderPairs    int    `json:"maxHeaderPairs" yaml:"maxHeaderPairs" toml:"maxHeaderPairs"`
-	MaxHeaderKeyLen   int    `json:"maxHeaderKeyLen" yaml:"maxHeaderKeyLen" toml:"maxHeaderKeyLen"`
-	MaxHeaderValueLen int    `json:"maxHeaderValueLen" yaml:"maxHeaderValueLen" toml:"maxHeaderValueLen"`
+	Path                 string `json:"path" yaml:"path" toml:"path"`
+	MaxExpiry            int    `json:"maxExpiry" yaml:"maxExpiry" toml:"maxExpiry"`
+	Cleanup              int    `json:"cleanup" yaml:"cleanup" toml:"cleanup"`
+	AddStatusHeader      bool   `json:"addStatusHeader" yaml:"addStatusHeader" toml:"addStatusHeader"`
+	QueryInKey           bool   `json:"queryInKey" yaml:"queryInKey" toml:"queryInKey"`
+	StripResponseCookies bool   `json:"stripResponseCookies" yaml:"stripResponseCookies" toml:"stripResponseCookies"`
+	MaxHeaderPairs       int    `json:"maxHeaderPairs" yaml:"maxHeaderPairs" toml:"maxHeaderPairs"`
+	MaxHeaderKeyLen      int    `json:"maxHeaderKeyLen" yaml:"maxHeaderKeyLen" toml:"maxHeaderKeyLen"`
+	MaxHeaderValueLen    int    `json:"maxHeaderValueLen" yaml:"maxHeaderValueLen" toml:"maxHeaderValueLen"`
 }
 
 // CreateConfig returns a config instance.
 func CreateConfig() *Config {
 	return &Config{
-		MaxExpiry:         int((5 * time.Minute).Seconds()),
-		Cleanup:           int((10 * time.Minute).Seconds()),
-		AddStatusHeader:   true,
-		QueryInKey:        true,
-		MaxHeaderPairs:    255,
-		MaxHeaderKeyLen:   100,
-		MaxHeaderValueLen: 8192,
+		MaxExpiry:            int((5 * time.Minute).Seconds()),
+		Cleanup:              int((10 * time.Minute).Seconds()),
+		AddStatusHeader:      true,
+		QueryInKey:           true,
+		StripResponseCookies: true,
+		MaxHeaderPairs:       255,
+		MaxHeaderKeyLen:      100,
+		MaxHeaderValueLen:    8192,
 	}
 }
 
@@ -241,6 +243,11 @@ func (rw *responseWriter) WriteHeader(s int) {
 	expiry, cacheable := rw.checkCacheable(rw.request, rw.ResponseWriter, s)
 
 	if cacheable {
+		// Strip Set-Cookie headers if configured (affects both cache and response)
+		if rw.config.StripResponseCookies {
+			rw.ResponseWriter.Header().Del("Set-Cookie")
+		}
+
 		// Start streaming cache write
 		metadata := cacheMetadata{
 			Status:  s,
