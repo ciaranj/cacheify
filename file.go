@@ -3,15 +3,14 @@ package cacheify
 
 import (
 	"bufio"
+	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"hash/crc32"
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 )
@@ -29,6 +28,14 @@ var bufferPool = sync.Pool{
 var copyBufferPool = sync.Pool{
 	New: func() interface{} {
 		b := make([]byte, 4*1024)
+		return &b
+	},
+}
+
+// hexBufferPool pools 64-byte buffers for SHA-256 hex encoding
+var hexBufferPool = sync.Pool{
+	New: func() interface{} {
+		b := make([]byte, 64) // SHA-256 hash = 32 bytes → 64 hex chars
 		return &b
 	},
 }
@@ -460,28 +467,36 @@ func (c *fileCache) SetStream(key string, metadata cacheMetadata, expiry time.Du
 	}, nil
 }
 
-func keyHash(key string) [4]byte {
-	h := crc32.Checksum([]byte(key), crc32.IEEETable)
-
-	var b [4]byte
-
-	binary.LittleEndian.PutUint32(b[:], h)
-
-	return b
+func keyHash(key string) [32]byte {
+	return sha256.Sum256([]byte(key))
 }
 
 func keyPath(path, key string) string {
 	h := keyHash(key)
-	key = strings.NewReplacer("/", "-", ":", "_").Replace(key)
 
-	return filepath.Join(
-		path,
-		hex.EncodeToString(h[0:1]),
-		hex.EncodeToString(h[1:2]),
-		hex.EncodeToString(h[2:3]),
-		hex.EncodeToString(h[3:4]),
-		key,
-	)
+	// Get pooled buffer for hex encoding (avoids allocation)
+	bufPtr := hexBufferPool.Get().(*[]byte)
+	defer hexBufferPool.Put(bufPtr)
+	hexBuf := *bufPtr
+	hex.Encode(hexBuf, h[:])
+
+	// Build path manually to minimize allocations
+	// Estimate: len(path) + 5 separators + 2+2+2+2+64 = len(path) + 77
+	const pathElements = 77
+	result := make([]byte, 0, len(path)+pathElements)
+	result = append(result, path...)
+	result = append(result, filepath.Separator)
+	result = append(result, hexBuf[0:2]...)
+	result = append(result, filepath.Separator)
+	result = append(result, hexBuf[2:4]...)
+	result = append(result, filepath.Separator)
+	result = append(result, hexBuf[4:6]...)
+	result = append(result, filepath.Separator)
+	result = append(result, hexBuf[6:8]...)
+	result = append(result, filepath.Separator)
+	result = append(result, hexBuf...)
+
+	return string(result)
 }
 
 type pathMutex struct {
