@@ -4,6 +4,7 @@ package cacheify
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -372,8 +373,16 @@ func (rw *responseWriter) finalize() error {
 		return nil
 	}
 
-	// If there were any write errors, abort instead of commit
+	// Abort if the response may be incomplete
+	var abortReason string
 	if rw.writeErr != nil {
+		abortReason = fmt.Sprintf("write error: %v", rw.writeErr)
+	} else if err := rw.request.Context().Err(); err != nil {
+		abortReason = fmt.Sprintf("request context cancelled: %v", err)
+	}
+
+	if abortReason != "" {
+		log.Printf("Aborting cache write for %s: %s", rw.cacheKey, abortReason)
 		return rw.cacheWriter.Abort()
 	}
 
