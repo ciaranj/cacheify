@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -182,6 +183,146 @@ func TestLockManager(t *testing.T) {
 
 	if l := len(lm.locks); l > 0 {
 		t.Errorf("unexpected lock length: want 0, got %d", l)
+	}
+}
+
+func TestLockManager_NoLeakAfterSetStreamCommit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Commit uses atomicRename which is not supported on Windows")
+	}
+
+	dir := createTempDir(t)
+
+	fc, err := newFileCache(dir, time.Minute, 255, 100, 8192)
+	if err != nil {
+		t.Fatalf("unexpected newFileCache error: %v", err)
+	}
+	defer fc.Stop()
+
+	metadata := cacheMetadata{
+		Status: 200,
+		Headers: map[string][]string{
+			"Content-Type": {"text/plain"},
+		},
+	}
+
+	// Write multiple unique keys through SetStream → Commit
+	for i := 0; i < 10; i++ {
+		key := fmt.Sprintf("GETlocalhost:8080/test/leak/%d", i)
+		writer, err := fc.SetStream(key, metadata, time.Minute)
+		if err != nil {
+			t.Fatalf("unexpected SetStream error on key %d: %v", i, err)
+		}
+		if _, err := writer.Write([]byte("body")); err != nil {
+			t.Fatalf("unexpected write error: %v", err)
+		}
+		if err := writer.Commit(); err != nil {
+			t.Fatalf("unexpected commit error: %v", err)
+		}
+	}
+
+	// After all writes complete, no lock entries should remain
+	fc.lm.mu.Lock()
+	remaining := len(fc.lm.locks)
+	fc.lm.mu.Unlock()
+
+	if remaining != 0 {
+		t.Errorf("lockManager leaked %d entries, want 0", remaining)
+	}
+}
+
+func TestLockManager_NoLeakAfterSetStreamAbort(t *testing.T) {
+	dir := createTempDir(t)
+
+	fc, err := newFileCache(dir, time.Minute, 255, 100, 8192)
+	if err != nil {
+		t.Fatalf("unexpected newFileCache error: %v", err)
+	}
+	defer fc.Stop()
+
+	metadata := cacheMetadata{
+		Status: 200,
+		Headers: map[string][]string{
+			"Content-Type": {"text/plain"},
+		},
+	}
+
+	// Write multiple unique keys through SetStream → Abort
+	for i := 0; i < 10; i++ {
+		key := fmt.Sprintf("GETlocalhost:8080/test/abort-leak/%d", i)
+		writer, err := fc.SetStream(key, metadata, time.Minute)
+		if err != nil {
+			t.Fatalf("unexpected SetStream error on key %d: %v", i, err)
+		}
+		if _, err := writer.Write([]byte("body")); err != nil {
+			t.Fatalf("unexpected write error: %v", err)
+		}
+		if err := writer.Abort(); err != nil {
+			t.Fatalf("unexpected abort error: %v", err)
+		}
+	}
+
+	// After all aborts complete, no lock entries should remain
+	fc.lm.mu.Lock()
+	remaining := len(fc.lm.locks)
+	fc.lm.mu.Unlock()
+
+	if remaining != 0 {
+		t.Errorf("lockManager leaked %d entries, want 0", remaining)
+	}
+}
+
+func TestLockManager_NoLeakAfterGetStream(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Commit uses atomicRename which is not supported on Windows")
+	}
+
+	dir := createTempDir(t)
+
+	fc, err := newFileCache(dir, time.Minute, 255, 100, 8192)
+	if err != nil {
+		t.Fatalf("unexpected newFileCache error: %v", err)
+	}
+	defer fc.Stop()
+
+	metadata := cacheMetadata{
+		Status: 200,
+		Headers: map[string][]string{
+			"Content-Type": {"text/plain"},
+		},
+	}
+
+	// Seed one key
+	writer, err := fc.SetStream(testCacheKey, metadata, time.Minute)
+	if err != nil {
+		t.Fatalf("unexpected SetStream error: %v", err)
+	}
+	_, _ = writer.Write([]byte("body"))
+	if err := writer.Commit(); err != nil {
+		t.Fatalf("unexpected commit error: %v", err)
+	}
+
+	// Read it many times (hits) and read missing keys (misses)
+	for i := 0; i < 10; i++ {
+		// Cache hit path
+		resp, err := fc.GetStream(testCacheKey)
+		if err != nil {
+			t.Fatalf("unexpected GetStream error: %v", err)
+		}
+		_, _ = io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		// Cache miss path
+		_, _ = fc.GetStream(fmt.Sprintf("GETlocalhost:8080/missing/%d", i))
+	}
+
+	// After all reads complete, no lock entries should remain
+	fc.lm.mu.Lock()
+	remaining := len(fc.lm.locks)
+	fc.lm.mu.Unlock()
+
+	if remaining != 0 {
+		t.Errorf("lockManager leaked %d entries, want 0", remaining)
 	}
 }
 

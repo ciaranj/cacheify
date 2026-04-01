@@ -465,6 +465,7 @@ type streamingCacheWriter struct {
 	file         *bufio.Writer
 	rawFile      *os.File
 	lm           *lockManager
+	lockHandle   lockHandle // Original lock handle from SetStream — must be used for Unlock
 	key          string
 	filepath     string // Final destination path
 	tempFilepath string // Temporary write path
@@ -498,8 +499,7 @@ func (scw *streamingCacheWriter) Abort() error {
 	scw.file.Reset(nil)
 	bufferPool.Put(scw.file)
 
-	mu := scw.lm.getLock(scw.key)
-	mu.Unlock(scw.lm)
+	scw.lockHandle.Unlock(scw.lm)
 	return nil
 }
 
@@ -518,8 +518,7 @@ func (scw *streamingCacheWriter) Commit() error {
 		_ = os.Remove(scw.tempFilepath) // Clean up temp file on error
 		scw.file.Reset(nil)
 		bufferPool.Put(scw.file)
-		mu := scw.lm.getLock(scw.key)
-		mu.Unlock(scw.lm)
+		scw.lockHandle.Unlock(scw.lm)
 		return fmt.Errorf("error flushing cache file: %w", err)
 	}
 
@@ -528,8 +527,7 @@ func (scw *streamingCacheWriter) Commit() error {
 		_ = os.Remove(scw.tempFilepath) // Clean up temp file on error
 		scw.file.Reset(nil)
 		bufferPool.Put(scw.file)
-		mu := scw.lm.getLock(scw.key)
-		mu.Unlock(scw.lm)
+		scw.lockHandle.Unlock(scw.lm)
 		return fmt.Errorf("error closing cache file: %w", err)
 	}
 
@@ -541,13 +539,11 @@ func (scw *streamingCacheWriter) Commit() error {
 	// This ensures partial writes are never visible as valid cache entries
 	if err := atomicRename(scw.tempFilepath, scw.filepath); err != nil {
 		_ = os.Remove(scw.tempFilepath) // Clean up on failure
-		mu := scw.lm.getLock(scw.key)
-		mu.Unlock(scw.lm)
+		scw.lockHandle.Unlock(scw.lm)
 		return fmt.Errorf("error committing cache file: %w", err)
 	}
 
-	mu := scw.lm.getLock(scw.key)
-	mu.Unlock(scw.lm)
+	scw.lockHandle.Unlock(scw.lm)
 
 	return nil
 }
@@ -631,6 +627,7 @@ func (c *fileCache) SetStream(key string, metadata cacheMetadata, expiry time.Du
 		file:         bufWriter,
 		rawFile:      file,
 		lm:           c.lm,
+		lockHandle:   mu,
 		key:          key,
 		filepath:     p,
 		tempFilepath: tempPath,
