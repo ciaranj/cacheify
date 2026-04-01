@@ -566,6 +566,120 @@ func TestCache_StartupCleansUpTempFiles(t *testing.T) {
 	verifyNoTempFiles(t, dir)
 }
 
+func TestCache_EmptyBodyCached(t *testing.T) {
+	dir := createTempDir(t)
+
+	// Upstream sends cacheable headers but no body — this is a legitimate empty response
+	next := func(rw http.ResponseWriter, req *http.Request) {
+		rw.Header().Set("Cache-Control", "max-age=20")
+		rw.WriteHeader(http.StatusOK)
+		// No rw.Write() call — 0-byte body, but request completed normally
+	}
+
+	cfg := &Config{
+		Path:              dir,
+		MaxExpiry:         10,
+		Cleanup:           20,
+		AddStatusHeader:   true,
+		MaxHeaderPairs:    2,
+		MaxHeaderKeyLen:   30,
+		MaxHeaderValueLen: 100,
+	}
+
+	c, err := New(context.Background(), http.HandlerFunc(next), cfg, "cacheify")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "http://localhost/empty", nil)
+	rw := httptest.NewRecorder()
+
+	c.ServeHTTP(rw, req)
+
+	if state := rw.Header().Get("Cache-Status"); state != "miss" {
+		t.Errorf("first request: expected cache miss, got %q", state)
+	}
+
+	// Second request should be a hit — a legitimate empty response with cache headers should be cached
+	rw2 := httptest.NewRecorder()
+	c.ServeHTTP(rw2, req)
+
+	if state := rw2.Header().Get("Cache-Status"); state != "hit" {
+		t.Errorf("second request: expected cache hit (legitimate empty body should be cached), got %q", state)
+	}
+
+	verifyNoTempFiles(t, dir)
+}
+
+func TestCache_ContextCancelledNotCached(t *testing.T) {
+	dir := createTempDir(t)
+
+	var calls int32
+
+	// First call: send cacheable headers, then block until context is cancelled (simulating timeout)
+	// Second call: respond normally with a body
+	next := func(rw http.ResponseWriter, req *http.Request) {
+		n := atomic.AddInt32(&calls, 1)
+		rw.Header().Set("Cache-Control", "max-age=20")
+		rw.WriteHeader(http.StatusOK)
+
+		if n == 1 {
+			// First request: context gets cancelled before body is written
+			<-req.Context().Done()
+			return
+		}
+
+		// Subsequent requests: respond normally
+		_, _ = rw.Write([]byte("real response"))
+	}
+
+	cfg := &Config{
+		Path:              dir,
+		MaxExpiry:         10,
+		Cleanup:           20,
+		AddStatusHeader:   true,
+		MaxHeaderPairs:    2,
+		MaxHeaderKeyLen:   30,
+		MaxHeaderValueLen: 100,
+	}
+
+	c, err := New(context.Background(), http.HandlerFunc(next), cfg, "cacheify")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodGet, "http://localhost/timeout", nil).WithContext(ctx)
+	rw := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		c.ServeHTTP(rw, req)
+		close(done)
+	}()
+
+	// Give the handler time to send headers, then cancel the context
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("ServeHTTP hung after context cancellation")
+	}
+
+	// Second request with a fresh context — should be a miss, not a hit on the empty cached response
+	req2 := httptest.NewRequest(http.MethodGet, "http://localhost/timeout", nil)
+	rw2 := httptest.NewRecorder()
+	c.ServeHTTP(rw2, req2)
+
+	if state := rw2.Header().Get("Cache-Status"); state == "hit" {
+		t.Errorf("second request: got cache hit after context cancellation — 0-byte response was incorrectly cached")
+	}
+
+	verifyNoTempFiles(t, dir)
+}
+
 // verifyNoTempFiles checks that no .tmp.* files remain in the cache directory
 // This ensures partial writes are properly cleaned up
 func verifyNoTempFiles(t *testing.T, dir string) {
