@@ -222,6 +222,11 @@ func (m *cache) cacheable(r *http.Request, w http.ResponseWriter, status int) (t
 		return 0, false
 	}
 
+	if expireBy.IsZero() {
+		// No explicit expiration - apply default max expiry
+		return time.Duration(m.cfg.MaxExpiry) * time.Second, true
+	}
+
 	expiry := time.Until(expireBy)
 	maxExpiry := time.Duration(m.cfg.MaxExpiry) * time.Second
 

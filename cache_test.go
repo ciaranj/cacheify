@@ -291,6 +291,38 @@ func TestCache_DownstreamFailureDuringStream(t *testing.T) {
 	verifyNoTempFiles(t, dir)
 }
 
+func TestCache_NoCacheControl(t *testing.T) {
+	dir := createTempDir(t)
+
+	next := func(rw http.ResponseWriter, req *http.Request) {
+		rw.WriteHeader(http.StatusOK)
+	}
+
+	cfg := &Config{Path: dir, MaxExpiry: 10, Cleanup: 20, AddStatusHeader: true, MaxHeaderPairs: 2, MaxHeaderKeyLen: 30, MaxHeaderValueLen: 100}
+
+	c, err := New(context.Background(), http.HandlerFunc(next), cfg, "cacheify")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "http://localhost/some/path", nil)
+	rw := httptest.NewRecorder()
+
+	c.ServeHTTP(rw, req)
+
+	if state := rw.Header().Get("Cache-Status"); state != cacheMissStatus {
+		t.Errorf("unexpected cache state: want \"miss\", got: %q", state)
+	}
+
+	rw = httptest.NewRecorder()
+
+	c.ServeHTTP(rw, req)
+
+	if state := rw.Header().Get("Cache-Status"); state != cacheHitStatus {
+		t.Errorf("unexpected cache state: want \"hit\", got: %q", state)
+	}
+}
+
 // failingResponseWriter simulates a downstream client that fails after writing N bytes
 type failingResponseWriter struct {
 	http.ResponseWriter
